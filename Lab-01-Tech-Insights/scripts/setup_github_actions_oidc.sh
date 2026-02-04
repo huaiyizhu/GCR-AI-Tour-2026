@@ -141,6 +141,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# If --github-repo is provided, use it as the source of truth for OWNER/REPO.
+# This matters because Entra federated credential Subject matching can be case-sensitive,
+# and GitHub may emit the repo name with a specific casing (e.g. GCR-AI-Tour-2026).
+if [[ -n "$GITHUB_REPO" ]]; then
+  if [[ "$GITHUB_REPO" =~ ^([^/]+)/([^/]+)$ ]]; then
+    OWNER="${OWNER:-"${BASH_REMATCH[1]}"}"
+    REPO="${REPO:-"${BASH_REMATCH[2]}"}"
+  fi
+fi
+
 if [[ "${EUID}" -eq 0 ]]; then
   echo "ERROR: Do not run this script with sudo/root." >&2
   echo "Azure CLI (az) and GitHub CLI (gh) authentication are per-user." >&2
@@ -181,6 +191,18 @@ if [[ -z "$OWNER" || -z "$REPO" ]]; then
   exit 1
 fi
 
+# Best-effort: if gh is available + authenticated, resolve canonical casing (nameWithOwner).
+# This helps avoid AADSTS700213 due to subject mismatch after repo rename/casing changes.
+if command -v gh >/dev/null 2>&1; then
+  if gh auth status >/dev/null 2>&1; then
+    canonical=$(gh repo view "${OWNER}/${REPO}" --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
+    if [[ -n "$canonical" && "$canonical" =~ ^([^/]+)/([^/]+)$ ]]; then
+      OWNER="${BASH_REMATCH[1]}"
+      REPO="${BASH_REMATCH[2]}"
+    fi
+  fi
+fi
+
 if [[ -z "$GITHUB_REPO" ]]; then
   GITHUB_REPO="${OWNER}/${REPO}"
 fi
@@ -213,6 +235,7 @@ echo "== GitHub =="
 echo "repo: ${OWNER}/${REPO}"
 echo "branch: ${BRANCH}"
 echo "configure-github: ${CONFIGURE_GITHUB}"
+echo "note: Federated Credential subject must match GitHub token subject exactly (including case)."
 
 echo "== Azure =="
 echo "subscription: ${SUBSCRIPTION_ID}"

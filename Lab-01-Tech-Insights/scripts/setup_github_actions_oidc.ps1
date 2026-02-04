@@ -33,6 +33,17 @@ if ($ConfigureGitHub) {
   Require-Command -Name "gh" -InstallUrl "https://cli.github.com/"
 }
 
+# If -GitHubRepo is provided, use it as the source of truth for Owner/Repo.
+# This matters because Entra federated credential Subject matching can be case-sensitive,
+# and GitHub may emit the repo name with a specific casing (e.g. GCR-AI-Tour-2026).
+if (-not [string]::IsNullOrWhiteSpace($GitHubRepo)) {
+  $m = [regex]::Match($GitHubRepo.Trim(), "^([^/]+)/([^/]+)$")
+  if ($m.Success) {
+    if ([string]::IsNullOrWhiteSpace($Owner)) { $Owner = $m.Groups[1].Value }
+    if ([string]::IsNullOrWhiteSpace($Repo)) { $Repo = $m.Groups[2].Value }
+  }
+}
+
 # Infer owner/repo from git remote if not provided
 if ([string]::IsNullOrWhiteSpace($Owner) -or [string]::IsNullOrWhiteSpace($Repo)) {
   $git = Get-Command git -ErrorAction SilentlyContinue
@@ -58,6 +69,25 @@ if ([string]::IsNullOrWhiteSpace($Owner) -or [string]::IsNullOrWhiteSpace($Repo)
 
 if ([string]::IsNullOrWhiteSpace($Owner) -or [string]::IsNullOrWhiteSpace($Repo)) {
   throw "Cannot determine -Owner/-Repo. Provide them explicitly, or run from a git clone with origin remote."
+}
+
+# Best-effort: if gh is available + authenticated, resolve canonical casing (nameWithOwner).
+# This helps avoid AADSTS700213 due to subject mismatch after repo rename/casing changes.
+try {
+  $gh = Get-Command gh -ErrorAction SilentlyContinue
+  if ($gh) {
+    gh auth status 2>$null | Out-Null
+    $canonical = (gh repo view "$Owner/$Repo" --json nameWithOwner --jq .nameWithOwner 2>$null).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($canonical)) {
+      $m2 = [regex]::Match($canonical, "^([^/]+)/([^/]+)$")
+      if ($m2.Success) {
+        $Owner = $m2.Groups[1].Value
+        $Repo  = $m2.Groups[2].Value
+      }
+    }
+  }
+} catch {
+  # ignore
 }
 
 if ([string]::IsNullOrWhiteSpace($GitHubRepo)) {
